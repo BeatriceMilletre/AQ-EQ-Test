@@ -173,13 +173,22 @@ ANSWER_LABELS = {
 # =========================
 
 # AQ : items où l’ACCORD (1 ou 2) = réponse "autistique"
-# D’après les instructions de cotation (Baron-Cohen, AQ adulte) 
 AQ_AGREE_ITEMS = {
     2, 4, 5, 6, 7, 9, 12, 13,
     16, 18, 19, 20, 21, 22, 23,
     26, 33, 35, 39, 41, 42, 43,
     45, 46,
 }
+
+def is_aq_autistic(item: int, resp: int) -> bool:
+    """Renvoie True si la réponse va dans le sens 'autistique' pour l’item AQ donné."""
+    if resp is None:
+        return False
+    if item in AQ_AGREE_ITEMS:
+        return resp in (1, 2)  # accord
+    else:
+        return resp in (3, 4)  # désaccord
+
 
 def score_aq_officiel(aq_answers: dict) -> int:
     """
@@ -188,18 +197,12 @@ def score_aq_officiel(aq_answers: dict) -> int:
     """
     score = 0
     for item, resp in aq_answers.items():
-        if resp is None:
-            continue
-        if item in AQ_AGREE_ITEMS:
-            if resp in (1, 2):
-                score += 1
-        else:
-            if resp in (3, 4):
-                score += 1
+        if is_aq_autistic(item, resp):
+            score += 1
     return score
 
 
-# Sous-échelles AQ (5 domaines de la publication originale) 
+# Sous-échelles AQ (5 domaines de la publication originale)
 AQ_SUBSCALES = {
     "A. Compétences sociales": [1, 11, 13, 15, 22, 36, 44, 45, 47, 48],
     "B. Flexibilité / Attention switching": [2, 4, 10, 16, 25, 32, 34, 37, 43, 46],
@@ -218,19 +221,45 @@ def score_aq_subscales(aq_answers: dict) -> dict:
         s = 0
         for item in items:
             resp = aq_answers.get(item)
-            if resp is None:
-                continue
-            if item in AQ_AGREE_ITEMS:
-                if resp in (1, 2):
-                    s += 1
-            else:
-                if resp in (3, 4):
-                    s += 1
+            if is_aq_autistic(item, resp):
+                s += 1
         subscores[name] = s
     return subscores
 
 
-# EQ : on garde la cotation 0–80 (40 items d’empathie / 20 fillers) 
+# === Grands blocs DSM A & B (analyse qualitative) ===
+
+DSM_A_ITEMS = set(AQ_SUBSCALES["A. Compétences sociales"] + AQ_SUBSCALES["C. Communication"])
+DSM_B_ITEMS = set(AQ_SUBSCALES["B. Flexibilité / Attention switching"] + AQ_SUBSCALES["B’. Attention aux détails"])
+
+def build_dsm_blocks(aq_answers: dict) -> dict:
+    """
+    Construit les blocs A et B façon DSM, en listant les items AQ
+    qui sont cotés dans le sens 'autistique', avec leur texte.
+    """
+    blockA = []
+    blockB = []
+
+    for item, resp in aq_answers.items():
+        if not is_aq_autistic(item, resp):
+            continue
+        if item in DSM_A_ITEMS:
+            blockA.append(f"{AQ_ITEMS[item]} (AQ{item})")
+        if item in DSM_B_ITEMS:
+            blockB.append(f"{AQ_ITEMS[item]} (AQ{item})")
+
+    # Tri pour stabilité
+    blockA_sorted = [p for _, p in sorted(zip([int(s.split('AQ')[1].rstrip(')')) for s in blockA], blockA))]
+    blockB_sorted = [p for _, p in sorted(zip([int(s.split('AQ')[1].rstrip(')')) for s in blockB], blockB))]
+
+    return {
+        "A": blockA_sorted,
+        "B": blockB_sorted,
+    }
+
+
+# EQ : cotation 0–80
+
 EQ_EMPATHY_ITEMS = {
     1, 4, 6, 8, 10, 11, 12, 14, 15, 18,
     19, 21, 22, 25, 26, 27, 28, 29, 32, 34,
@@ -238,7 +267,6 @@ EQ_EMPATHY_ITEMS = {
     48, 49, 50, 52, 54, 55, 57, 58, 59, 60,
 }
 
-# Items où l’ACCORD est la réponse la plus empathique (2 points)
 EQ_POSITIVE_AGREE = {
     1, 6, 19, 22, 25, 26,
     35, 36, 37, 38,
@@ -401,6 +429,7 @@ else:
             aq_score = score_aq_officiel(aq_answers)
             eq_score = score_eq_officiel(eq_answers)
             aq_subscores = score_aq_subscales(aq_answers)
+            dsm_blocks = build_dsm_blocks(aq_answers)
 
             st.markdown("---")
             st.subheader("Synthèse des scores")
@@ -419,7 +448,7 @@ else:
                     "Les scores bas sont associés à une empathie plus faible."
                 )
 
-            st.markdown("### Sous-échelles AQ (proches des sections A–D de ta macro / CLASS CLINIC)")
+            st.markdown("### Sous-échelles AQ")
             sub_rows = []
             for name, items in AQ_SUBSCALES.items():
                 sub_rows.append(
@@ -430,6 +459,22 @@ else:
                     }
                 )
             st.table(sub_rows)
+
+            st.markdown("### Analyse qualitative – grands blocs DSM")
+
+            st.markdown("#### A. Trouble qualitatif de l’interaction sociale")
+            if dsm_blocks["A"]:
+                for phrase in dsm_blocks["A"]:
+                    st.markdown(f"- {phrase}")
+            else:
+                st.markdown("_Aucun item AQ cliniquement significatif dans ce bloc avec le seuil actuel._")
+
+            st.markdown("#### B. Comportements, intérêts et activités restreints, répétitifs et stéréotypés")
+            if dsm_blocks["B"]:
+                for phrase in dsm_blocks["B"]:
+                    st.markdown(f"- {phrase}")
+            else:
+                st.markdown("_Aucun item AQ cliniquement significatif dans ce bloc avec le seuil actuel._")
 
             st.markdown("---")
             st.subheader("Réponses détaillées AQ")
