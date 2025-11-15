@@ -169,18 +169,21 @@ ANSWER_LABELS = {
 }
 
 # =========================
-# COTATION OFFICIELLE
+# COTATION OFFICIELLE AQ / EQ
 # =========================
 
-# AQ : items où l'accord = 1 point
+# AQ : items où l’ACCORD (1 ou 2) = réponse "autistique"
+# D’après les instructions de cotation (Baron-Cohen, AQ adulte) 
 AQ_AGREE_ITEMS = {
-    2, 4, 5, 6, 7, 9, 12, 13, 16, 18, 19, 20, 21, 22, 23,
-    26, 35, 39, 41, 42, 43, 45, 46, 33,
+    2, 4, 5, 6, 7, 9, 12, 13,
+    16, 18, 19, 20, 21, 22, 23,
+    26, 33, 35, 39, 41, 42, 43,
+    45, 46,
 }
 
 def score_aq_officiel(aq_answers: dict) -> int:
     """
-    Cotation officielle AQ (0–50) à partir de la clé Baron-Cohen.
+    Cotation officielle AQ (0–50).
     aq_answers : {item: 1–4}, avec 1/2 = accord, 3/4 = désaccord.
     """
     score = 0
@@ -188,17 +191,46 @@ def score_aq_officiel(aq_answers: dict) -> int:
         if resp is None:
             continue
         if item in AQ_AGREE_ITEMS:
-            # Accord = trait autistique (1 point)
             if resp in (1, 2):
                 score += 1
         else:
-            # Désaccord = trait autistique (1 point)
             if resp in (3, 4):
                 score += 1
     return score
 
 
-# EQ : liste des 40 items d'empathie (les 20 autres sont fillers)
+# Sous-échelles AQ (5 domaines de la publication originale) 
+AQ_SUBSCALES = {
+    "A. Compétences sociales": [1, 11, 13, 15, 22, 36, 44, 45, 47, 48],
+    "B. Flexibilité / Attention switching": [2, 4, 10, 16, 25, 32, 34, 37, 43, 46],
+    "B’. Attention aux détails": [5, 6, 9, 12, 19, 23, 28, 29, 30, 49],
+    "C. Communication": [7, 17, 18, 26, 27, 31, 33, 35, 38, 39],
+    "D. Imagination": [3, 8, 14, 20, 21, 24, 40, 41, 42, 50],
+}
+
+def score_aq_subscales(aq_answers: dict) -> dict:
+    """
+    Retourne un dict {nom_sous_échelle: score (0–10)}.
+    La logique de cotation (accord/désaccord) est la même que pour le score total.
+    """
+    subscores = {}
+    for name, items in AQ_SUBSCALES.items():
+        s = 0
+        for item in items:
+            resp = aq_answers.get(item)
+            if resp is None:
+                continue
+            if item in AQ_AGREE_ITEMS:
+                if resp in (1, 2):
+                    s += 1
+            else:
+                if resp in (3, 4):
+                    s += 1
+        subscores[name] = s
+    return subscores
+
+
+# EQ : on garde la cotation 0–80 (40 items d’empathie / 20 fillers) 
 EQ_EMPATHY_ITEMS = {
     1, 4, 6, 8, 10, 11, 12, 14, 15, 18,
     19, 21, 22, 25, 26, 27, 28, 29, 32, 34,
@@ -206,15 +238,14 @@ EQ_EMPATHY_ITEMS = {
     48, 49, 50, 52, 54, 55, 57, 58, 59, 60,
 }
 
-# Items où l'accord est la réponse empathique
+# Items où l’ACCORD est la réponse la plus empathique (2 points)
 EQ_POSITIVE_AGREE = {
     1, 6, 19, 22, 25, 26,
     35, 36, 37, 38,
     41, 42, 43, 44,
-    52, 54, 55, 58, 59, 60,
+    52, 54, 55,
+    57, 58, 59, 60,
 }
-
-# Les autres items d'empathie sont en reverse : le désaccord est empathique
 EQ_NEGATIVE_AGREE = EQ_EMPATHY_ITEMS - EQ_POSITIVE_AGREE
 
 def score_eq_officiel(eq_answers: dict) -> int:
@@ -234,7 +265,7 @@ def score_eq_officiel(eq_answers: dict) -> int:
                 score += 2
             elif resp == 2:
                 score += 1
-        else:  # item reverse
+        else:  # item "reverse"
             if resp == 4:
                 score += 2
             elif resp == 3:
@@ -369,6 +400,7 @@ else:
             # Scores officiels
             aq_score = score_aq_officiel(aq_answers)
             eq_score = score_eq_officiel(eq_answers)
+            aq_subscores = score_aq_subscales(aq_answers)
 
             st.markdown("---")
             st.subheader("Synthèse des scores")
@@ -377,15 +409,27 @@ else:
             with c1:
                 st.metric("Score AQ (0–50)", aq_score)
                 st.caption(
-                    "Cotation officielle AQ : 1 point par réponse dans le sens autistique, "
-                    "score total ≥ 32 souvent retrouvé chez les profils TSA/HFA."
+                    "AQ total (cotation officielle). "
+                    "Un score ≥ 32 est souvent retrouvé chez les profils TSA/HFA."
                 )
             with c2:
                 st.metric("Score EQ (0–80)", eq_score)
                 st.caption(
-                    "Cotation officielle EQ : 40 items d’empathie, 0–2 points chacun. "
-                    "Les scores bas indiquent une empathie cognitive/affective plus faible."
+                    "EQ total (40 items d’empathie). "
+                    "Les scores bas sont associés à une empathie plus faible."
                 )
+
+            st.markdown("### Sous-échelles AQ (proches des sections A–D de ta macro / CLASS CLINIC)")
+            sub_rows = []
+            for name, items in AQ_SUBSCALES.items():
+                sub_rows.append(
+                    {
+                        "Sous-échelle": name,
+                        "Score": aq_subscores[name],
+                        "Max": len(items),
+                    }
+                )
+            st.table(sub_rows)
 
             st.markdown("---")
             st.subheader("Réponses détaillées AQ")
