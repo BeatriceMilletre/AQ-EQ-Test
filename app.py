@@ -3,6 +3,8 @@ import json
 import os
 import secrets
 from datetime import date
+import smtplib
+from email.mime.text import MIMEText
 
 # =========================
 # CONFIG GÉNÉRALE
@@ -17,8 +19,11 @@ st.set_page_config(
 DATA_DIR = "data_aq_eq"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+NOTIFICATION_EMAIL = "beatricemilletre@gmail.com"  # destinataire des notifications
+
+
 # =========================
-# OUTILS
+# OUTILS FICHIERS
 # =========================
 
 def generate_code(n_chars: int = 8) -> str:
@@ -38,6 +43,56 @@ def load_response(patient_code: str):
         return None
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+# =========================
+# OUTIL EMAIL
+# =========================
+
+def send_email_notification(patient_code: str, payload: dict):
+    """
+    Envoie un mail à Béatrice lorsqu'un questionnaire est rempli.
+    ATTENTION : nécessite une config SMTP dans st.secrets["smtp"] :
+
+    [smtp]
+    HOST = "smtp.votre_fournisseur"
+    PORT = 465
+    USER = "votre_login"
+    PASSWORD = "votre_mot_de_passe"
+    FROM = "adresse@expediteur.com"
+    """
+    try:
+        smtp_conf = st.secrets["smtp"]
+    except Exception:
+        # Aucune config SMTP -> on ne fait rien
+        return
+
+    subject = f"Nouveau questionnaire AQ/EQ – code patient {patient_code}"
+    body_lines = [
+        "Un nouveau questionnaire AQ/EQ a été rempli.",
+        "",
+        f"Code patient : {patient_code}",
+        f"Identifiant (saisi) : {payload.get('patient_id', '')}",
+        f"Sexe : {payload.get('sex', '')}",
+        f"Date de naissance : {payload.get('dob', '')}",
+        f"Date de passation : {payload.get('test_date', '')}",
+        f"Code praticien saisi : {payload.get('practitioner_code', '')}",
+        "",
+        "Les réponses détaillées sont disponibles dans l’espace praticien de l’app.",
+    ]
+    msg = MIMEText("\n".join(body_lines), _charset="utf-8")
+    msg["Subject"] = subject
+    msg["From"] = smtp_conf.get("FROM", smtp_conf.get("USER", "no-reply@example.com"))
+    msg["To"] = NOTIFICATION_EMAIL
+
+    try:
+        with smtplib.SMTP_SSL(smtp_conf["HOST"], int(smtp_conf["PORT"])) as server:
+            server.login(smtp_conf["USER"], smtp_conf["PASSWORD"])
+            server.send_message(msg)
+    except Exception as e:
+        # On n'affiche pas l'erreur au patient, on logge juste côté serveur
+        st.sidebar.warning("⚠️ Notification email non envoyée (problème SMTP).")
+        # Optionnel : print(e)
 
 
 # =========================
@@ -169,10 +224,10 @@ ANSWER_LABELS = {
 }
 
 # =========================
-# COTATION OFFICIELLE AQ / EQ
+# COTATION AQ
 # =========================
 
-# AQ : items où l’ACCORD (1 ou 2) = réponse "autistique"
+# Items AQ où l’ACCORD (1 ou 2) = réponse "autistique"
 AQ_AGREE_ITEMS = {
     2, 4, 5, 6, 7, 9, 12, 13,
     16, 18, 19, 20, 21, 22, 23,
@@ -181,7 +236,7 @@ AQ_AGREE_ITEMS = {
 }
 
 def is_aq_autistic(item: int, resp: int) -> bool:
-    """Renvoie True si la réponse va dans le sens 'autistique' pour l’item AQ donné."""
+    """True si la réponse va dans le sens 'autistique' pour cet item AQ."""
     if resp is None:
         return False
     if item in AQ_AGREE_ITEMS:
@@ -191,18 +246,11 @@ def is_aq_autistic(item: int, resp: int) -> bool:
 
 
 def score_aq_officiel(aq_answers: dict) -> int:
-    """
-    Cotation officielle AQ (0–50).
-    aq_answers : {item: 1–4}, avec 1/2 = accord, 3/4 = désaccord.
-    """
-    score = 0
-    for item, resp in aq_answers.items():
-        if is_aq_autistic(item, resp):
-            score += 1
-    return score
+    """Cotation officielle AQ (0–50)."""
+    return sum(1 for item, resp in aq_answers.items() if is_aq_autistic(item, resp))
 
 
-# Sous-échelles AQ (5 domaines de la publication originale)
+# Sous-échelles AQ (10 items chacune)
 AQ_SUBSCALES = {
     "A. Compétences sociales": [1, 11, 13, 15, 22, 36, 44, 45, 47, 48],
     "B. Flexibilité / Attention switching": [2, 4, 10, 16, 25, 32, 34, 37, 43, 46],
@@ -212,10 +260,7 @@ AQ_SUBSCALES = {
 }
 
 def score_aq_subscales(aq_answers: dict) -> dict:
-    """
-    Retourne un dict {nom_sous_échelle: score (0–10)}.
-    La logique de cotation (accord/désaccord) est la même que pour le score total.
-    """
+    """Retourne {nom_sous_échelle: score (0–10)}."""
     subscores = {}
     for name, items in AQ_SUBSCALES.items():
         s = 0
@@ -227,38 +272,165 @@ def score_aq_subscales(aq_answers: dict) -> dict:
     return subscores
 
 
-# === Grands blocs DSM A & B (analyse qualitative) ===
+# =========================
+# BLOCS DSM / CLASS CLINIC
+# =========================
 
-DSM_A_ITEMS = set(AQ_SUBSCALES["A. Compétences sociales"] + AQ_SUBSCALES["C. Communication"])
-DSM_B_ITEMS = set(AQ_SUBSCALES["B. Flexibilité / Attention switching"] + AQ_SUBSCALES["B’. Attention aux détails"])
+# On définit les ensembles d’items pour A, B, C, D (DSM / CLASS CLINIC)
+CLASS_A_ITEMS = AQ_SUBSCALES["A. Compétences sociales"]
+CLASS_B_ITEMS = AQ_SUBSCALES["B. Flexibilité / Attention switching"] + AQ_SUBSCALES["B’. Attention aux détails"]
+CLASS_C_ITEMS = AQ_SUBSCALES["C. Communication"]
+CLASS_D_ITEMS = AQ_SUBSCALES["D. Imagination"]
+
+DSM_A_ITEMS = set(CLASS_A_ITEMS)
+DSM_B_ITEMS = set(CLASS_B_ITEMS)
+DSM_C_ITEMS = set(CLASS_C_ITEMS)
+DSM_D_ITEMS = set(CLASS_D_ITEMS)
 
 def build_dsm_blocks(aq_answers: dict) -> dict:
     """
-    Construit les blocs A et B façon DSM, en listant les items AQ
-    qui sont cotés dans le sens 'autistique', avec leur texte.
+    Construit les blocs A, B, C, D façon DSM, en listant les items AQ
+    cotés dans le sens 'autistique' avec leur texte.
     """
-    blockA = []
-    blockB = []
+    blocks = {"A": [], "B": [], "C": [], "D": []}
 
-    for item, resp in aq_answers.items():
-        if not is_aq_autistic(item, resp):
-            continue
-        if item in DSM_A_ITEMS:
-            blockA.append(f"{AQ_ITEMS[item]} (AQ{item})")
-        if item in DSM_B_ITEMS:
-            blockB.append(f"{AQ_ITEMS[item]} (AQ{item})")
+    # Bloc A : interaction sociale
+    for item in sorted(DSM_A_ITEMS):
+        if is_aq_autistic(item, aq_answers.get(item)):
+            blocks["A"].append(f"{AQ_ITEMS[item]} (AQ{item})")
 
-    # Tri pour stabilité
-    blockA_sorted = [p for _, p in sorted(zip([int(s.split('AQ')[1].rstrip(')')) for s in blockA], blockA))]
-    blockB_sorted = [p for _, p in sorted(zip([int(s.split('AQ')[1].rstrip(')')) for s in blockB], blockB))]
+    # Bloc B : comportements / intérêts restreints et répétitifs
+    for item in sorted(DSM_B_ITEMS):
+        if is_aq_autistic(item, aq_answers.get(item)):
+            blocks["B"].append(f"{AQ_ITEMS[item]} (AQ{item})")
 
-    return {
-        "A": blockA_sorted,
-        "B": blockB_sorted,
+    # Bloc C : communication
+    for item in sorted(DSM_C_ITEMS):
+        if is_aq_autistic(item, aq_answers.get(item)):
+            blocks["C"].append(f"{AQ_ITEMS[item]} (AQ{item})")
+
+    # Bloc D : imagination
+    for item in sorted(DSM_D_ITEMS):
+        if is_aq_autistic(item, aq_answers.get(item)):
+            blocks["D"].append(f"{AQ_ITEMS[item]} (AQ{item})")
+
+    return blocks
+
+
+def compute_class_clinic_counts(aq_answers: dict) -> dict:
+    """
+    Renvoie les comptes pour la grille CLASS CLINIC :
+    { "A": {"name": ..., "required": 3, "observed": n, "max_items": m}, ... }
+    """
+    sections = {
+        "A": {
+            "label": "Social",
+            "items": CLASS_A_ITEMS,
+            "required": 3,
+        },
+        "B": {
+            "label": "Obsessions / intérêts restreints",
+            "items": CLASS_B_ITEMS,
+            "required": 3,
+        },
+        "C": {
+            "label": "Communication",
+            "items": CLASS_C_ITEMS,
+            "required": 3,
+        },
+        "D": {
+            "label": "Imagination",
+            "items": CLASS_D_ITEMS,
+            "required": 1,
+        },
     }
 
+    out = {}
+    total_obs = 0
+    for key, sec in sections.items():
+        obs = 0
+        for item in sec["items"]:
+            if is_aq_autistic(item, aq_answers.get(item)):
+                obs += 1
+        total_obs += obs
+        out[key] = {
+            "label": sec["label"],
+            "required": sec["required"],
+            "observed": obs,
+            "max_items": len(sec["items"]),
+        }
 
-# EQ : cotation 0–80
+    out["TOTAL"] = {
+        "label": "Total A+B+C+D",
+        "required": 10,  # comme dans ton tableau (3+3+3+1)
+        "observed": total_obs,
+        "max_items": 18,  # max théorique de la grille
+    }
+
+    return out
+
+
+def build_class_clinic_summary(section_counts: dict, prereq_flags: dict) -> str:
+    """
+    Produit une phrase de synthèse type CLASS CLINIC, sans faire de diagnostic formel.
+    section_counts : résultat de compute_class_clinic_counts
+    prereq_flags : dict {"E": bool, ..., "I": bool}
+    """
+    # Tous les blocs A–D au seuil ?
+    core_ok = all(
+        section_counts[s]["observed"] >= section_counts[s]["required"]
+        for s in ["A", "B", "C", "D"]
+    )
+    prereq_ok = all(prereq_flags.values())
+
+    msg_parts = []
+
+    msg_parts.append(
+        f"A: Social – {section_counts['A']['observed']} symptômes (≥ {section_counts['A']['required']} requis)."
+    )
+    msg_parts.append(
+        f"B: Obsessions / intérêts restreints – {section_counts['B']['observed']} symptômes (≥ {section_counts['B']['required']} requis)."
+    )
+    msg_parts.append(
+        f"C: Communication – {section_counts['C']['observed']} symptômes (≥ {section_counts['C']['required']} requis)."
+    )
+    msg_parts.append(
+        f"D: Imagination – {section_counts['D']['observed']} symptômes (≥ {section_counts['D']['required']} requis)."
+    )
+    msg_parts.append(
+        f"Total A+B+C+D : {section_counts['TOTAL']['observed']} symptômes (seuil indicatif = {section_counts['TOTAL']['required']})."
+    )
+
+    if core_ok and prereq_ok:
+        msg_parts.append(
+            "L’ensemble des blocs A–D atteint le seuil indicatif, et les prérequis E–I sont cochés : "
+            "le profil est compatible avec un fonctionnement de type TSA/Asperger, "
+            "dans le cadre d’une évaluation clinique globale (ce résultat ne constitue pas un diagnostic à lui seul)."
+        )
+    elif core_ok and not prereq_ok:
+        msg_parts.append(
+            "Les blocs A–D atteignent les seuils indicatifs, mais un ou plusieurs prérequis E–I ne sont pas remplis "
+            "(ou restent incertains). Un diagnostic de TSA doit être envisagé avec prudence et replacé dans le contexte clinique complet."
+        )
+    elif not core_ok and prereq_ok:
+        msg_parts.append(
+            "Les prérequis E–I sont cochés, mais l’un au moins des blocs A–D n’atteint pas le seuil indicatif. "
+            "On peut évoquer des traits du spectre autistique ou des particularités neurodéveloppementales, "
+            "sans que les critères complets soient réunis selon cette grille."
+        )
+    else:
+        msg_parts.append(
+            "Ni les seuils symptomatiques ni certains prérequis ne sont réunis : "
+            "le profil décrit des particularités de fonctionnement, mais ne remplit pas, en l’état, "
+            "les critères d’un tableau type TSA selon cette grille."
+        )
+
+    return "\n\n".join(msg_parts)
+
+
+# =========================
+# COTATION EQ
+# =========================
 
 EQ_EMPATHY_ITEMS = {
     1, 4, 6, 8, 10, 11, 12, 14, 15, 18,
@@ -277,28 +449,21 @@ EQ_POSITIVE_AGREE = {
 EQ_NEGATIVE_AGREE = EQ_EMPATHY_ITEMS - EQ_POSITIVE_AGREE
 
 def score_eq_officiel(eq_answers: dict) -> int:
-    """
-    Cotation officielle EQ (0–80) :
-    - 2 points pour la réponse la plus empathique
-    - 1 point pour la réponse légèrement empathique
-    - 0 sinon
-    """
+    """Cotation officielle EQ (0–80)."""
     score = 0
     for item, resp in eq_answers.items():
         if resp is None or item not in EQ_EMPATHY_ITEMS:
             continue
-
         if item in EQ_POSITIVE_AGREE:
             if resp == 1:
                 score += 2
             elif resp == 2:
                 score += 1
-        else:  # item "reverse"
+        else:
             if resp == 4:
                 score += 2
             elif resp == 3:
                 score += 1
-
     return score
 
 
@@ -351,7 +516,7 @@ if mode.startswith("Je suis un répondant"):
             aq_answers[i] = st.radio(
                 f"{i}. {label}",
                 options=list(ANSWER_LABELS.keys()),
-                format_func=lambda x, _labels=ANSWER_LABELS: _labels[x],
+                format_func=lambda x, _labels=ANSWERER_LABELS if (ANSWERER_LABELS:=ANSWER_LABELS) else ANSWER_LABELS: _labels[x],
                 horizontal=True,
                 key=f"AQ_{i}",
             )
@@ -387,6 +552,7 @@ if mode.startswith("Je suis un répondant"):
         }
 
         save_response(patient_code, payload)
+        send_email_notification(patient_code, payload)
 
         st.success("Merci, vos réponses ont été enregistrées.")
         st.info(
@@ -425,11 +591,12 @@ else:
             aq_answers = {int(k): int(v) for k, v in data["aq_answers"].items()}
             eq_answers = {int(k): int(v) for k, v in data["eq_answers"].items()}
 
-            # Scores officiels
+            # Scores
             aq_score = score_aq_officiel(aq_answers)
             eq_score = score_eq_officiel(eq_answers)
             aq_subscores = score_aq_subscales(aq_answers)
             dsm_blocks = build_dsm_blocks(aq_answers)
+            class_counts = compute_class_clinic_counts(aq_answers)
 
             st.markdown("---")
             st.subheader("Synthèse des scores")
@@ -460,21 +627,102 @@ else:
                 )
             st.table(sub_rows)
 
-            st.markdown("### Analyse qualitative – grands blocs DSM")
+            st.markdown("### Analyse qualitative – blocs DSM / CLASS CLINIC")
 
+            # Bloc A
             st.markdown("#### A. Trouble qualitatif de l’interaction sociale")
             if dsm_blocks["A"]:
                 for phrase in dsm_blocks["A"]:
                     st.markdown(f"- {phrase}")
             else:
-                st.markdown("_Aucun item AQ cliniquement significatif dans ce bloc avec le seuil actuel._")
+                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
 
+            # Bloc B
             st.markdown("#### B. Comportements, intérêts et activités restreints, répétitifs et stéréotypés")
             if dsm_blocks["B"]:
                 for phrase in dsm_blocks["B"]:
                     st.markdown(f"- {phrase}")
             else:
-                st.markdown("_Aucun item AQ cliniquement significatif dans ce bloc avec le seuil actuel._")
+                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+
+            # Bloc C
+            st.markdown("#### C. Troubles qualitatifs de la communication (verbale et non verbale)")
+            if dsm_blocks["C"]:
+                for phrase in dsm_blocks["C"]:
+                    st.markdown(f"- {phrase}")
+            else:
+                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+
+            # Bloc D
+            st.markdown("#### D. Troubles de l’imagination")
+            if dsm_blocks["D"]:
+                for phrase in dsm_blocks["D"]:
+                    st.markdown(f"- {phrase}")
+            else:
+                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+
+            st.markdown("### Grille CLASS CLINIC – Synthèse quantitative")
+
+            table_rows = []
+            for key in ["A", "B", "C", "D"]:
+                c = class_counts[key]
+                table_rows.append(
+                    {
+                        "Section": key,
+                        "Domaine": c["label"],
+                        "Nb requis": c["required"],
+                        "Nb observés": c["observed"],
+                        "Nb items possibles": c["max_items"],
+                    }
+                )
+            total = class_counts["TOTAL"]
+            table_rows.append(
+                {
+                    "Section": "Total",
+                    "Domaine": total["label"],
+                    "Nb requis": total["required"],
+                    "Nb observés": total["observed"],
+                    "Nb items possibles": total["max_items"],
+                }
+            )
+            st.table(table_rows)
+
+            st.markdown("### Pré-requis E–I (à compléter par le praticien)")
+
+            with st.form("prereq_form"):
+                e = st.checkbox(
+                    "E. Les problèmes notés ci-dessus ont été présents pendant toute la vie.", value=False
+                )
+                f = st.checkbox(
+                    "F. Ces problèmes ont entraîné une souffrance ou une gêne significative (dépression, isolement social, difficultés au travail ou à l'école, incapacité à atteindre des objectifs de vie).",
+                    value=False,
+                )
+                g = st.checkbox(
+                    "G. Il n'y a pas de retard du langage signalé pendant l'enfance.",
+                    value=False,
+                )
+                h = st.checkbox(
+                    "H. Il n'y a pas de signe d'un trouble spécifique des apprentissages majeur.",
+                    value=False,
+                )
+                i = st.checkbox(
+                    "I. Le patient ne présente pas de traits psychotiques.",
+                    value=False,
+                )
+                prereq_submitted = st.form_submit_button("Mettre à jour la synthèse")
+
+            prereq_flags = {"E": e, "F": f, "G": g, "H": h, "I": i}
+
+            st.markdown("### Synthèse clinique automatique (aide à la réflexion, non diagnostic)")
+
+            summary_text = build_class_clinic_summary(class_counts, prereq_flags)
+            st.markdown(summary_text.replace("\n\n", "\n\n---\n\n"))
+
+            st.caption(
+                "⚠️ Cette synthèse est un outil d'aide à l'analyse clinique et ne constitue pas un diagnostic en soi. "
+                "Elle doit toujours être interprétée dans le cadre d'une évaluation globale (anamnèse, observation clinique, "
+                "autres instruments, contexte développemental, etc.)."
+            )
 
             st.markdown("---")
             st.subheader("Réponses détaillées AQ")
