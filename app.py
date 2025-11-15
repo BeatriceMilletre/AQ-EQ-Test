@@ -43,9 +43,6 @@ def load_response(patient_code: str):
 # =========================
 # QUESTIONS
 # =========================
-# Pour ne pas saturer le code, je mets ici des libellés simples.
-# Tu peux remplacer chaque "Question AQ X" / "Question EQ X"
-# par le texte français exact de tes fichiers AQ_French / EQ-French.
 
 AQ_ITEMS = {
     1: "Je préfère réaliser des activités avec d’autres personnes plutôt que seul(e).",
@@ -163,8 +160,7 @@ EQ_ITEMS = {
     60: "Habituellement, je comprends le point de vue des autres même si je ne le partage pas.",
 }
 
-
-# Échelle de réponse (1 à 4) type Baron-Cohen
+# Échelle de réponse (1 à 4)
 ANSWER_LABELS = {
     1: "Tout à fait d’accord",
     2: "Plutôt d’accord",
@@ -173,66 +169,78 @@ ANSWER_LABELS = {
 }
 
 # =========================
-# COTATION (VERSION DE TRAVAIL)
+# COTATION OFFICIELLE
 # =========================
 
-# Pour l’AQ officiel :
-# - chaque item rapporte 1 point si la réponse est « autistique »
-#   (définit par la clé AQ originale : soit accord, soit désaccord selon l’item)
-# Ici, par défaut, je mets une version *approx* :
-#   - items où l’accord va dans le sens d’un trait autistique apparent
-#   - items où le désaccord va dans le sens du trait autistique
-# 👉 Liste à affiner en t’appuyant sur AQ_Scoring_Key.doc
-
-AGREE_IS_AUTISTIC = {
-    # Exemple (à compléter/ajuster) :
-    2, 4, 5, 6, 7, 9, 12, 13, 16, 18, 19, 21, 22, 23,
-    25, 26, 29, 30, 33, 35, 39, 41, 42, 45, 46, 49
+# AQ : items où l'accord = 1 point
+AQ_AGREE_ITEMS = {
+    2, 4, 5, 6, 7, 9, 12, 13, 16, 18, 19, 20, 21, 22, 23,
+    26, 35, 39, 41, 42, 43, 45, 46, 33,
 }
-# Les autres items seront considérés comme "DISAGREE_IS_AUTISTIC"
 
-def score_aq_approx(aq_answers: dict) -> int:
+def score_aq_officiel(aq_answers: dict) -> int:
     """
-    AQ ~0–50.
-    aq_answers : {item_number: response_int_1_to_4}
-    Cotation simplifiée : 1 point si réponse autistique, 0 sinon.
+    Cotation officielle AQ (0–50) à partir de la clé Baron-Cohen.
+    aq_answers : {item: 1–4}, avec 1/2 = accord, 3/4 = désaccord.
     """
     score = 0
     for item, resp in aq_answers.items():
         if resp is None:
             continue
-        if item in AGREE_IS_AUTISTIC:
-            if resp in (1, 2):  # accord
+        if item in AQ_AGREE_ITEMS:
+            # Accord = trait autistique (1 point)
+            if resp in (1, 2):
                 score += 1
         else:
-            if resp in (3, 4):  # désaccord
+            # Désaccord = trait autistique (1 point)
+            if resp in (3, 4):
                 score += 1
     return score
 
 
-def score_eq_brut(eq_answers: dict) -> int:
-    """
-    Score brut EQ : somme des réponses 1–4.
-    Ce n’est PAS encore la cotation 0/1/2 de la clé officielle.
-    """
-    return sum(resp for resp in eq_answers.values() if resp is not None)
+# EQ : liste des 40 items d'empathie (les 20 autres sont fillers)
+EQ_EMPATHY_ITEMS = {
+    1, 4, 6, 8, 10, 11, 12, 14, 15, 18,
+    19, 21, 22, 25, 26, 27, 28, 29, 32, 34,
+    35, 36, 37, 38, 39, 41, 42, 43, 44, 46,
+    48, 49, 50, 52, 54, 55, 57, 58, 59, 60,
+}
 
+# Items où l'accord est la réponse empathique
+EQ_POSITIVE_AGREE = {
+    1, 6, 19, 22, 25, 26,
+    35, 36, 37, 38,
+    41, 42, 43, 44,
+    52, 54, 55, 58, 59, 60,
+}
 
-# Placeholders si tu veux recoder exactement comme Excel/macro :
-def score_aq_officiel(aq_answers: dict) -> int:
-    """
-    TODO : remplacer score_aq_approx par une cotation EXACTE en utilisant AQ_Scoring_Key.
-    Pour l’instant, on renvoie le score approx.
-    """
-    return score_aq_approx(aq_answers)
-
+# Les autres items d'empathie sont en reverse : le désaccord est empathique
+EQ_NEGATIVE_AGREE = EQ_EMPATHY_ITEMS - EQ_POSITIVE_AGREE
 
 def score_eq_officiel(eq_answers: dict) -> int:
     """
-    TODO : implémenter la vraie cotation EQ (0–80) à partir de ta clé complète.
-    Pour l’instant, on renvoie 0 pour marquer que ce n’est pas fait.
+    Cotation officielle EQ (0–80) :
+    - 2 points pour la réponse la plus empathique
+    - 1 point pour la réponse légèrement empathique
+    - 0 sinon
     """
-    return 0
+    score = 0
+    for item, resp in eq_answers.items():
+        if resp is None or item not in EQ_EMPATHY_ITEMS:
+            continue
+
+        if item in EQ_POSITIVE_AGREE:
+            if resp == 1:
+                score += 2
+            elif resp == 2:
+                score += 1
+        else:  # item reverse
+            if resp == 4:
+                score += 2
+            elif resp == 3:
+                score += 1
+
+    return score
 
 
 # =========================
@@ -336,8 +344,6 @@ else:
 
     with st.form("form_praticien"):
         patient_code = st.text_input("Code patient", "")
-        # Optionnel : tu peux aussi filtrer sur un code praticien
-        # practitioner_code = st.text_input("Votre code praticien", "")
         submitted = st.form_submit_button("Charger les résultats")
 
     if submitted:
@@ -356,35 +362,29 @@ else:
                 st.write(f"**Date de passation** : {data.get('test_date', '')}")
                 st.write(f"**Code praticien enregistré** : {data.get('practitioner_code', '')}")
 
+            # Les réponses sont stockées en JSON => clés en str
             aq_answers = {int(k): int(v) for k, v in data["aq_answers"].items()}
             eq_answers = {int(k): int(v) for k, v in data["eq_answers"].items()}
 
-            # Scores
-            aq_approx = score_aq_approx(aq_answers)
-            aq_off = score_aq_officiel(aq_answers)
-            eq_brut = score_eq_brut(eq_answers)
-            eq_off = score_eq_officiel(eq_answers)
+            # Scores officiels
+            aq_score = score_aq_officiel(aq_answers)
+            eq_score = score_eq_officiel(eq_answers)
 
             st.markdown("---")
-            st.subheader("Synthèse des scores (version de travail)")
+            st.subheader("Synthèse des scores")
 
             c1, c2 = st.columns(2)
             with c1:
-                st.metric("AQ (approx, 0–50)", aq_approx)
+                st.metric("Score AQ (0–50)", aq_score)
                 st.caption(
-                    "Cotation approchée (1 point pour chaque réponse « autistique » probable). "
-                    "À affiner avec la clé AQ originale."
+                    "Cotation officielle AQ : 1 point par réponse dans le sens autistique, "
+                    "score total ≥ 32 souvent retrouvé chez les profils TSA/HFA."
                 )
             with c2:
-                st.metric("EQ brut (somme 1–4)", eq_brut)
+                st.metric("Score EQ (0–80)", eq_score)
                 st.caption(
-                    "Somme brute des réponses EQ (1–4). "
-                    "La cotation officielle 0/1/2 reste à implémenter."
-                )
-
-            if eq_off != 0 or aq_off != aq_approx:
-                st.info(
-                    f"Version officielle (si tu la codes plus tard) – AQ: {aq_off}, EQ: {eq_off}"
+                    "Cotation officielle EQ : 40 items d’empathie, 0–2 points chacun. "
+                    "Les scores bas indiquent une empathie cognitive/affective plus faible."
                 )
 
             st.markdown("---")
@@ -411,9 +411,3 @@ else:
                     }
                 )
             st.dataframe(eq_table, use_container_width=True)
-
-            st.markdown(
-                "> ⚙️ Quand tu voudras, on pourra reprendre ensemble la cotation exacte "
-                "de l’AQ (clé officielle) et de l’EQ (0–80) et la logique CLASS CLINIC "
-                "en reprenant point par point ta macro."
-            )
