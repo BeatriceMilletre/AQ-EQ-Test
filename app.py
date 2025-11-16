@@ -89,10 +89,9 @@ def send_email_notification(patient_code: str, payload: dict):
         with smtplib.SMTP_SSL(smtp_conf["HOST"], int(smtp_conf["PORT"])) as server:
             server.login(smtp_conf["USER"], smtp_conf["PASSWORD"])
             server.send_message(msg)
-    except Exception as e:
-        # On n'affiche pas l'erreur au patient, on logge juste côté serveur
+    except Exception:
+        # On évite d'afficher une erreur au patient
         st.sidebar.warning("⚠️ Notification email non envoyée (problème SMTP).")
-        # Optionnel : print(e)
 
 
 # =========================
@@ -155,7 +154,7 @@ AQ_ITEMS = {
 EQ_ITEMS = {
     1: "Je peux facilement dire quand quelqu’un veut entamer une conversation.",
     2: "Je préfère les animaux aux êtres humains.",
-    3: "J’essaie d’être à la mode.",
+    3: "J’essaie de être à la mode.",
     4: "Je trouve difficile d’expliquer aux autres des choses que j’ai comprises facilement et que eux n’ont pas comprises du premier coup.",
     5: "Je rêve la plupart des nuits.",
     6: "J’aime prendre soin des autres.",
@@ -276,7 +275,6 @@ def score_aq_subscales(aq_answers: dict) -> dict:
 # BLOCS DSM / CLASS CLINIC
 # =========================
 
-# On définit les ensembles d’items pour A, B, C, D (DSM / CLASS CLINIC)
 CLASS_A_ITEMS = AQ_SUBSCALES["A. Compétences sociales"]
 CLASS_B_ITEMS = AQ_SUBSCALES["B. Flexibilité / Attention switching"] + AQ_SUBSCALES["B’. Attention aux détails"]
 CLASS_C_ITEMS = AQ_SUBSCALES["C. Communication"]
@@ -376,7 +374,6 @@ def build_class_clinic_summary(section_counts: dict, prereq_flags: dict) -> str:
     section_counts : résultat de compute_class_clinic_counts
     prereq_flags : dict {"E": bool, ..., "I": bool}
     """
-    # Tous les blocs A–D au seuil ?
     core_ok = all(
         section_counts[s]["observed"] >= section_counts[s]["required"]
         for s in ["A", "B", "C", "D"]
@@ -403,18 +400,18 @@ def build_class_clinic_summary(section_counts: dict, prereq_flags: dict) -> str:
 
     if core_ok and prereq_ok:
         msg_parts.append(
-            "L’ensemble des blocs A–D atteint le seuil indicatif, et les prérequis E–I sont cochés : "
+            "L’ensemble des blocs A–D atteint le seuil indicatif, et les prérequis E–I rapportés par le patient sont cochés : "
             "le profil est compatible avec un fonctionnement de type TSA/Asperger, "
             "dans le cadre d’une évaluation clinique globale (ce résultat ne constitue pas un diagnostic à lui seul)."
         )
     elif core_ok and not prereq_ok:
         msg_parts.append(
-            "Les blocs A–D atteignent les seuils indicatifs, mais un ou plusieurs prérequis E–I ne sont pas remplis "
+            "Les blocs A–D atteignent les seuils indicatifs, mais un ou plusieurs prérequis E–I rapportés par le patient ne sont pas remplis "
             "(ou restent incertains). Un diagnostic de TSA doit être envisagé avec prudence et replacé dans le contexte clinique complet."
         )
     elif not core_ok and prereq_ok:
         msg_parts.append(
-            "Les prérequis E–I sont cochés, mais l’un au moins des blocs A–D n’atteint pas le seuil indicatif. "
+            "Les prérequis E–I rapportés par le patient sont cochés, mais l’un au moins des blocs A–D n’atteint pas le seuil indicatif. "
             "On peut évoquer des traits du spectre autistique ou des particularités neurodéveloppementales, "
             "sans que les critères complets soient réunis selon cette grille."
         )
@@ -516,7 +513,7 @@ if mode.startswith("Je suis un répondant"):
             aq_answers[i] = st.radio(
                 f"{i}. {label}",
                 options=list(ANSWER_LABELS.keys()),
-                format_func=lambda x, _labels=ANSWERER_LABELS if (ANSWERER_LABELS:=ANSWER_LABELS) else ANSWER_LABELS: _labels[x],
+                format_func=lambda x, _labels=ANSWER_LABELS: _labels[x],
                 horizontal=True,
                 key=f"AQ_{i}",
             )
@@ -534,11 +531,47 @@ if mode.startswith("Je suis un répondant"):
                 key=f"EQ_{i}",
             )
 
+        st.markdown("---")
+        st.subheader("Questions générales sur votre parcours")
+
+        def radio_oui_non(label: str, key: str) -> bool:
+            rep = st.radio(label, ["Oui", "Non"], key=key, horizontal=True)
+            return rep == "Oui"
+
+        prereq_E = radio_oui_non(
+            "Ces difficultés (sociales, de communication, intérêts spécifiques, etc.) sont présentes depuis toujours (depuis l’enfance).",
+            "prereq_E",
+        )
+        prereq_F = radio_oui_non(
+            "Ces difficultés ont déjà eu un impact important sur votre vie (isolement, souffrance, échec ou difficultés importantes à l’école / au travail, etc.).",
+            "prereq_F",
+        )
+        prereq_G = radio_oui_non(
+            "Dans votre souvenir (ou celui de vos parents), il n’y a pas eu de retard important de langage dans l’enfance.",
+            "prereq_G",
+        )
+        prereq_H = radio_oui_non(
+            "Vous n’avez pas eu (à votre connaissance) de trouble spécifique majeur des apprentissages (lecture, écriture, calcul) qui explique à lui seul vos difficultés.",
+            "prereq_H",
+        )
+        prereq_I = radio_oui_non(
+            "Vous n’avez jamais présenté de symptômes psychotiques (perte de contact avec la réalité, idées délirantes, hallucinations diagnostiquées par un psychiatre).",
+            "prereq_I",
+        )
+
         submitted = st.form_submit_button("Envoyer mes réponses")
 
     if submitted:
         # Générer un code patient
         patient_code = generate_code(8)
+
+        prereq_flags = {
+            "E": prereq_E,
+            "F": prereq_F,
+            "G": prereq_G,
+            "H": prereq_H,
+            "I": prereq_I,
+        }
 
         payload = {
             "patient_code": patient_code,
@@ -549,6 +582,7 @@ if mode.startswith("Je suis un répondant"):
             "practitioner_code": practitioner_code,
             "aq_answers": aq_answers,
             "eq_answers": eq_answers,
+            "prereq": prereq_flags,
         }
 
         save_response(patient_code, payload)
@@ -590,6 +624,16 @@ else:
             # Les réponses sont stockées en JSON => clés en str
             aq_answers = {int(k): int(v) for k, v in data["aq_answers"].items()}
             eq_answers = {int(k): int(v) for k, v in data["eq_answers"].items()}
+
+            # Pré-requis remplis par le patient (peut ne pas exister pour d’anciens enregistrements)
+            prereq_data = data.get("prereq", {})
+            prereq_flags = {
+                "E": bool(prereq_data.get("E", False)),
+                "F": bool(prereq_data.get("F", False)),
+                "G": bool(prereq_data.get("G", False)),
+                "H": bool(prereq_data.get("H", False)),
+                "I": bool(prereq_data.get("I", False)),
+            }
 
             # Scores
             aq_score = score_aq_officiel(aq_answers)
@@ -687,31 +731,16 @@ else:
             )
             st.table(table_rows)
 
-            st.markdown("### Pré-requis E–I (à compléter par le praticien)")
+            st.markdown("### Pré-requis E–I (réponses du patient)")
 
-            with st.form("prereq_form"):
-                e = st.checkbox(
-                    "E. Les problèmes notés ci-dessus ont été présents pendant toute la vie.", value=False
-                )
-                f = st.checkbox(
-                    "F. Ces problèmes ont entraîné une souffrance ou une gêne significative (dépression, isolement social, difficultés au travail ou à l'école, incapacité à atteindre des objectifs de vie).",
-                    value=False,
-                )
-                g = st.checkbox(
-                    "G. Il n'y a pas de retard du langage signalé pendant l'enfance.",
-                    value=False,
-                )
-                h = st.checkbox(
-                    "H. Il n'y a pas de signe d'un trouble spécifique des apprentissages majeur.",
-                    value=False,
-                )
-                i = st.checkbox(
-                    "I. Le patient ne présente pas de traits psychotiques.",
-                    value=False,
-                )
-                prereq_submitted = st.form_submit_button("Mettre à jour la synthèse")
+            def format_flag(flag: bool) -> str:
+                return "✅ Oui" if flag else "❌ Non"
 
-            prereq_flags = {"E": e, "F": f, "G": g, "H": h, "I": i}
+            st.markdown(f"- **E. Présence depuis l’enfance** : {format_flag(prereq_flags['E'])}")
+            st.markdown(f"- **F. Impact fonctionnel significatif** : {format_flag(prereq_flags['F'])}")
+            st.markdown(f"- **G. Pas de retard majeur du langage** : {format_flag(prereq_flags['G'])}")
+            st.markdown(f"- **H. Pas de trouble spécifique majeur des apprentissages** : {format_flag(prereq_flags['H'])}")
+            st.markdown(f"- **I. Pas de traits psychotiques** : {format_flag(prereq_flags['I'])}")
 
             st.markdown("### Synthèse clinique automatique (aide à la réflexion, non diagnostic)")
 
