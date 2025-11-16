@@ -3,8 +3,6 @@ import json
 import os
 import secrets
 from datetime import date
-import smtplib
-from email.mime.text import MIMEText
 
 # =========================
 # CONFIG GÉNÉRALE
@@ -18,9 +16,6 @@ st.set_page_config(
 
 DATA_DIR = "data_aq_eq"
 os.makedirs(DATA_DIR, exist_ok=True)
-
-NOTIFICATION_EMAIL = "beatricemilletre@gmail.com"  # destinataire des notifications
-
 
 # =========================
 # OUTILS FICHIERS
@@ -43,55 +38,6 @@ def load_response(patient_code: str):
         return None
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-# =========================
-# OUTIL EMAIL
-# =========================
-
-def send_email_notification(patient_code: str, payload: dict):
-    """
-    Envoie un mail à Béatrice lorsqu'un questionnaire est rempli.
-    ATTENTION : nécessite une config SMTP dans st.secrets["smtp"] :
-
-    [smtp]
-    HOST = "smtp.votre_fournisseur"
-    PORT = 465
-    USER = "votre_login"
-    PASSWORD = "votre_mot_de_passe"
-    FROM = "adresse@expediteur.com"
-    """
-    try:
-        smtp_conf = st.secrets["smtp"]
-    except Exception:
-        # Aucune config SMTP -> on ne fait rien
-        return
-
-    subject = f"Nouveau questionnaire AQ/EQ – code patient {patient_code}"
-    body_lines = [
-        "Un nouveau questionnaire AQ/EQ a été rempli.",
-        "",
-        f"Code patient : {patient_code}",
-        f"Identifiant (saisi) : {payload.get('patient_id', '')}",
-        f"Sexe : {payload.get('sex', '')}",
-        f"Date de naissance : {payload.get('dob', '')}",
-        f"Date de passation : {payload.get('test_date', '')}",
-        f"Code praticien saisi : {payload.get('practitioner_code', '')}",
-        "",
-        "Les réponses détaillées sont disponibles dans l’espace praticien de l’app.",
-    ]
-    msg = MIMEText("\n".join(body_lines), _charset="utf-8")
-    msg["Subject"] = subject
-    msg["From"] = smtp_conf.get("FROM", smtp_conf.get("USER", "no-reply@example.com"))
-    msg["To"] = NOTIFICATION_EMAIL
-
-    try:
-        with smtplib.SMTP_SSL(smtp_conf["HOST"], int(smtp_conf["PORT"])) as server:
-            server.login(smtp_conf["USER"], smtp_conf["PASSWORD"])
-            server.send_message(msg)
-    except Exception:
-        # On évite d'afficher une erreur au patient
-        st.sidebar.warning("⚠️ Notification email non envoyée (problème SMTP).")
 
 
 # =========================
@@ -154,7 +100,7 @@ AQ_ITEMS = {
 EQ_ITEMS = {
     1: "Je peux facilement dire quand quelqu’un veut entamer une conversation.",
     2: "Je préfère les animaux aux êtres humains.",
-    3: "J’essaie de être à la mode.",
+    3: "J’essaie d’être à la mode.",
     4: "Je trouve difficile d’expliquer aux autres des choses que j’ai comprises facilement et que eux n’ont pas comprises du premier coup.",
     5: "Je rêve la plupart des nuits.",
     6: "J’aime prendre soin des autres.",
@@ -214,7 +160,6 @@ EQ_ITEMS = {
     60: "Habituellement, je comprends le point de vue des autres même si je ne le partage pas.",
 }
 
-# Échelle de réponse (1 à 4)
 ANSWER_LABELS = {
     1: "Tout à fait d’accord",
     2: "Plutôt d’accord",
@@ -226,7 +171,6 @@ ANSWER_LABELS = {
 # COTATION AQ
 # =========================
 
-# Items AQ où l’ACCORD (1 ou 2) = réponse "autistique"
 AQ_AGREE_ITEMS = {
     2, 4, 5, 6, 7, 9, 12, 13,
     16, 18, 19, 20, 21, 22, 23,
@@ -235,21 +179,16 @@ AQ_AGREE_ITEMS = {
 }
 
 def is_aq_autistic(item: int, resp: int) -> bool:
-    """True si la réponse va dans le sens 'autistique' pour cet item AQ."""
     if resp is None:
         return False
     if item in AQ_AGREE_ITEMS:
-        return resp in (1, 2)  # accord
+        return resp in (1, 2)
     else:
-        return resp in (3, 4)  # désaccord
-
+        return resp in (3, 4)
 
 def score_aq_officiel(aq_answers: dict) -> int:
-    """Cotation officielle AQ (0–50)."""
     return sum(1 for item, resp in aq_answers.items() if is_aq_autistic(item, resp))
 
-
-# Sous-échelles AQ (10 items chacune)
 AQ_SUBSCALES = {
     "A. Compétences sociales": [1, 11, 13, 15, 22, 36, 44, 45, 47, 48],
     "B. Flexibilité / Attention switching": [2, 4, 10, 16, 25, 32, 34, 37, 43, 46],
@@ -258,21 +197,16 @@ AQ_SUBSCALES = {
     "D. Imagination": [3, 8, 14, 20, 21, 24, 40, 41, 42, 50],
 }
 
-def score_aq_subscales(aq_answers: dict) -> dict:
-    """Retourne {nom_sous_échelle: score (0–10)}."""
-    subscores = {}
+def score_aq_subscales(aq_answers):
+    subs = {}
     for name, items in AQ_SUBSCALES.items():
-        s = 0
-        for item in items:
-            resp = aq_answers.get(item)
-            if is_aq_autistic(item, resp):
-                s += 1
-        subscores[name] = s
-    return subscores
-
+        subs[name] = sum(
+            1 for i in items if is_aq_autistic(i, aq_answers.get(i))
+        )
+    return subs
 
 # =========================
-# BLOCS DSM / CLASS CLINIC
+# DSM / CLASS CLINIC
 # =========================
 
 CLASS_A_ITEMS = AQ_SUBSCALES["A. Compétences sociales"]
@@ -285,71 +219,39 @@ DSM_B_ITEMS = set(CLASS_B_ITEMS)
 DSM_C_ITEMS = set(CLASS_C_ITEMS)
 DSM_D_ITEMS = set(CLASS_D_ITEMS)
 
-def build_dsm_blocks(aq_answers: dict) -> dict:
-    """
-    Construit les blocs A, B, C, D façon DSM, en listant les items AQ
-    cotés dans le sens 'autistique' avec leur texte.
-    """
+def build_dsm_blocks(aq_answers):
     blocks = {"A": [], "B": [], "C": [], "D": []}
-
-    # Bloc A : interaction sociale
     for item in sorted(DSM_A_ITEMS):
         if is_aq_autistic(item, aq_answers.get(item)):
             blocks["A"].append(f"{AQ_ITEMS[item]} (AQ{item})")
-
-    # Bloc B : comportements / intérêts restreints et répétitifs
     for item in sorted(DSM_B_ITEMS):
         if is_aq_autistic(item, aq_answers.get(item)):
             blocks["B"].append(f"{AQ_ITEMS[item]} (AQ{item})")
-
-    # Bloc C : communication
     for item in sorted(DSM_C_ITEMS):
         if is_aq_autistic(item, aq_answers.get(item)):
             blocks["C"].append(f"{AQ_ITEMS[item]} (AQ{item})")
-
-    # Bloc D : imagination
     for item in sorted(DSM_D_ITEMS):
         if is_aq_autistic(item, aq_answers.get(item)):
             blocks["D"].append(f"{AQ_ITEMS[item]} (AQ{item})")
-
     return blocks
 
 
-def compute_class_clinic_counts(aq_answers: dict) -> dict:
-    """
-    Renvoie les comptes pour la grille CLASS CLINIC :
-    { "A": {"name": ..., "required": 3, "observed": n, "max_items": m}, ... }
-    """
+def compute_class_clinic_counts(aq_answers):
     sections = {
-        "A": {
-            "label": "Social",
-            "items": CLASS_A_ITEMS,
-            "required": 3,
-        },
-        "B": {
-            "label": "Obsessions / intérêts restreints",
-            "items": CLASS_B_ITEMS,
-            "required": 3,
-        },
-        "C": {
-            "label": "Communication",
-            "items": CLASS_C_ITEMS,
-            "required": 3,
-        },
-        "D": {
-            "label": "Imagination",
-            "items": CLASS_D_ITEMS,
-            "required": 1,
-        },
+        "A": {"label": "Social", "items": CLASS_A_ITEMS, "required": 3},
+        "B": {"label": "Obsessions / intérêts restreints", "items": CLASS_B_ITEMS, "required": 3},
+        "C": {"label": "Communication", "items": CLASS_C_ITEMS, "required": 3},
+        "D": {"label": "Imagination", "items": CLASS_D_ITEMS, "required": 1},
     }
 
     out = {}
     total_obs = 0
+
     for key, sec in sections.items():
-        obs = 0
-        for item in sec["items"]:
-            if is_aq_autistic(item, aq_answers.get(item)):
-                obs += 1
+        obs = sum(
+            1 for item in sec["items"]
+            if is_aq_autistic(item, aq_answers.get(item))
+        )
         total_obs += obs
         out[key] = {
             "label": sec["label"],
@@ -360,70 +262,48 @@ def compute_class_clinic_counts(aq_answers: dict) -> dict:
 
     out["TOTAL"] = {
         "label": "Total A+B+C+D",
-        "required": 10,  # comme dans ton tableau (3+3+3+1)
+        "required": 10,
         "observed": total_obs,
-        "max_items": 18,  # max théorique de la grille
+        "max_items": 18,
     }
 
     return out
 
 
-def build_class_clinic_summary(section_counts: dict, prereq_flags: dict) -> str:
-    """
-    Produit une phrase de synthèse type CLASS CLINIC, sans faire de diagnostic formel.
-    section_counts : résultat de compute_class_clinic_counts
-    prereq_flags : dict {"E": bool, ..., "I": bool}
-    """
+def build_class_clinic_summary(section_counts, prereq_flags):
     core_ok = all(
         section_counts[s]["observed"] >= section_counts[s]["required"]
         for s in ["A", "B", "C", "D"]
     )
     prereq_ok = all(prereq_flags.values())
 
-    msg_parts = []
+    msg = []
 
-    msg_parts.append(
-        f"A: Social – {section_counts['A']['observed']} symptômes (≥ {section_counts['A']['required']} requis)."
-    )
-    msg_parts.append(
-        f"B: Obsessions / intérêts restreints – {section_counts['B']['observed']} symptômes (≥ {section_counts['B']['required']} requis)."
-    )
-    msg_parts.append(
-        f"C: Communication – {section_counts['C']['observed']} symptômes (≥ {section_counts['C']['required']} requis)."
-    )
-    msg_parts.append(
-        f"D: Imagination – {section_counts['D']['observed']} symptômes (≥ {section_counts['D']['required']} requis)."
-    )
-    msg_parts.append(
-        f"Total A+B+C+D : {section_counts['TOTAL']['observed']} symptômes (seuil indicatif = {section_counts['TOTAL']['required']})."
-    )
+    msg.append(f"A: Social – {section_counts['A']['observed']} symptômes (≥ {section_counts['A']['required']}).")
+    msg.append(f"B: Intérêts restreints – {section_counts['B']['observed']} symptômes (≥ {section_counts['B']['required']}).")
+    msg.append(f"C: Communication – {section_counts['C']['observed']} symptômes (≥ {section_counts['C']['required']}).")
+    msg.append(f"D: Imagination – {section_counts['D']['observed']} symptômes (≥ {section_counts['D']['required']}).")
+    msg.append(f"Total A+B+C+D : {section_counts['TOTAL']['observed']} symptômes (seuil = 10).")
 
     if core_ok and prereq_ok:
-        msg_parts.append(
-            "L’ensemble des blocs A–D atteint le seuil indicatif, et les prérequis E–I rapportés par le patient sont cochés : "
-            "le profil est compatible avec un fonctionnement de type TSA/Asperger, "
-            "dans le cadre d’une évaluation clinique globale (ce résultat ne constitue pas un diagnostic à lui seul)."
+        msg.append(
+            "➡️ Ensemble des critères principaux + prérequis cochés : profil compatible avec un fonctionnement du spectre autistique (à confirmer "
+            "cliniquement, ce résultat n'étant pas un diagnostic)."
         )
     elif core_ok and not prereq_ok:
-        msg_parts.append(
-            "Les blocs A–D atteignent les seuils indicatifs, mais un ou plusieurs prérequis E–I rapportés par le patient ne sont pas remplis "
-            "(ou restent incertains). Un diagnostic de TSA doit être envisagé avec prudence et replacé dans le contexte clinique complet."
+        msg.append(
+            "➡️ Critères A–D atteints, mais prérequis non tous remplis (selon les réponses du patient). Interprétation clinique prudente."
         )
     elif not core_ok and prereq_ok:
-        msg_parts.append(
-            "Les prérequis E–I rapportés par le patient sont cochés, mais l’un au moins des blocs A–D n’atteint pas le seuil indicatif. "
-            "On peut évoquer des traits du spectre autistique ou des particularités neurodéveloppementales, "
-            "sans que les critères complets soient réunis selon cette grille."
+        msg.append(
+            "➡️ Pré-requis cochés mais critères A–D partiellement atteints : traits ou particularités possibles, sans réunir tous les critères."
         )
     else:
-        msg_parts.append(
-            "Ni les seuils symptomatiques ni certains prérequis ne sont réunis : "
-            "le profil décrit des particularités de fonctionnement, mais ne remplit pas, en l’état, "
-            "les critères d’un tableau type TSA selon cette grille."
+        msg.append(
+            "➡️ Ni les critères ni les prérequis ne sont réunis : particularités possibles mais non compatible avec le tableau complet."
         )
 
-    return "\n\n".join(msg_parts)
-
+    return "\n\n".join(msg)
 
 # =========================
 # COTATION EQ
@@ -443,10 +323,8 @@ EQ_POSITIVE_AGREE = {
     52, 54, 55,
     57, 58, 59, 60,
 }
-EQ_NEGATIVE_AGREE = EQ_EMPATHY_ITEMS - EQ_POSITIVE_AGREE
 
 def score_eq_officiel(eq_answers: dict) -> int:
-    """Cotation officielle EQ (0–80)."""
     score = 0
     for item, resp in eq_answers.items():
         if resp is None or item not in EQ_EMPATHY_ITEMS:
@@ -463,9 +341,8 @@ def score_eq_officiel(eq_answers: dict) -> int:
                 score += 1
     return score
 
-
 # =========================
-# UI – CHOIX DU MODE
+# UI – CHOIX MODE
 # =========================
 
 st.title("🧩 AQ + EQ en ligne")
@@ -532,37 +409,36 @@ if mode.startswith("Je suis un répondant"):
             )
 
         st.markdown("---")
-        st.subheader("Questions générales sur votre parcours")
-
-        def radio_oui_non(label: str, key: str) -> bool:
+        st.subheader("Questions générales (pré-requis)")
+        
+        def radio_oui_non(label, key):
             rep = st.radio(label, ["Oui", "Non"], key=key, horizontal=True)
             return rep == "Oui"
 
         prereq_E = radio_oui_non(
-            "Ces difficultés (sociales, de communication, intérêts spécifiques, etc.) sont présentes depuis toujours (depuis l’enfance).",
+            "Ces difficultés (sociales, communication, intérêts spécifiques) sont présentes depuis toujours (depuis l’enfance).",
             "prereq_E",
         )
         prereq_F = radio_oui_non(
-            "Ces difficultés ont déjà eu un impact important sur votre vie (isolement, souffrance, échec ou difficultés importantes à l’école / au travail, etc.).",
+            "Ces difficultés ont déjà eu un impact important sur votre vie (isolement, souffrance, difficultés importantes).",
             "prereq_F",
         )
         prereq_G = radio_oui_non(
-            "Dans votre souvenir (ou celui de vos parents), il n’y a pas eu de retard important de langage dans l’enfance.",
+            "Il n’y a pas eu de retard majeur du langage dans l’enfance.",
             "prereq_G",
         )
         prereq_H = radio_oui_non(
-            "Vous n’avez pas eu (à votre connaissance) de trouble spécifique majeur des apprentissages (lecture, écriture, calcul) qui explique à lui seul vos difficultés.",
+            "Vous n’avez pas eu de trouble spécifique majeur des apprentissages (lecture, écriture, calcul).",
             "prereq_H",
         )
         prereq_I = radio_oui_non(
-            "Vous n’avez jamais présenté de symptômes psychotiques (perte de contact avec la réalité, idées délirantes, hallucinations diagnostiquées par un psychiatre).",
+            "Vous n’avez jamais présenté de symptômes psychotiques.",
             "prereq_I",
         )
 
         submitted = st.form_submit_button("Envoyer mes réponses")
 
     if submitted:
-        # Générer un code patient
         patient_code = generate_code(8)
 
         prereq_flags = {
@@ -586,12 +462,10 @@ if mode.startswith("Je suis un répondant"):
         }
 
         save_response(patient_code, payload)
-        send_email_notification(patient_code, payload)
 
         st.success("Merci, vos réponses ont été enregistrées.")
         st.info(
-            f"Communiquez **ce code** à votre praticien : **{patient_code}**\n\n"
-            "Les résultats détaillés seront discutés avec lui/elle."
+            f"Communiquez **ce code** à votre praticien : **{patient_code}**."
         )
 
 # =========================
@@ -621,11 +495,9 @@ else:
                 st.write(f"**Date de passation** : {data.get('test_date', '')}")
                 st.write(f"**Code praticien enregistré** : {data.get('practitioner_code', '')}")
 
-            # Les réponses sont stockées en JSON => clés en str
             aq_answers = {int(k): int(v) for k, v in data["aq_answers"].items()}
             eq_answers = {int(k): int(v) for k, v in data["eq_answers"].items()}
 
-            # Pré-requis remplis par le patient (peut ne pas exister pour d’anciens enregistrements)
             prereq_data = data.get("prereq", {})
             prereq_flags = {
                 "E": bool(prereq_data.get("E", False)),
@@ -635,7 +507,7 @@ else:
                 "I": bool(prereq_data.get("I", False)),
             }
 
-            # Scores
+            # scores
             aq_score = score_aq_officiel(aq_answers)
             eq_score = score_eq_officiel(eq_answers)
             aq_subscores = score_aq_subscales(aq_answers)
@@ -648,28 +520,18 @@ else:
             c1, c2 = st.columns(2)
             with c1:
                 st.metric("Score AQ (0–50)", aq_score)
-                st.caption(
-                    "AQ total (cotation officielle). "
-                    "Un score ≥ 32 est souvent retrouvé chez les profils TSA/HFA."
-                )
             with c2:
                 st.metric("Score EQ (0–80)", eq_score)
-                st.caption(
-                    "EQ total (40 items d’empathie). "
-                    "Les scores bas sont associés à une empathie plus faible."
-                )
 
             st.markdown("### Sous-échelles AQ")
-            sub_rows = []
+            rows = []
             for name, items in AQ_SUBSCALES.items():
-                sub_rows.append(
-                    {
-                        "Sous-échelle": name,
-                        "Score": aq_subscores[name],
-                        "Max": len(items),
-                    }
-                )
-            st.table(sub_rows)
+                rows.append({
+                    "Sous-échelle": name,
+                    "Score": aq_subscores[name],
+                    "Max": len(items),
+                })
+            st.table(rows)
 
             st.markdown("### Analyse qualitative – blocs DSM / CLASS CLINIC")
 
@@ -679,101 +541,74 @@ else:
                 for phrase in dsm_blocks["A"]:
                     st.markdown(f"- {phrase}")
             else:
-                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+                st.markdown("_Aucun item significatif._")
 
             # Bloc B
-            st.markdown("#### B. Comportements, intérêts et activités restreints, répétitifs et stéréotypés")
+            st.markdown("#### B. Intérêts restreints et répétitifs")
             if dsm_blocks["B"]:
                 for phrase in dsm_blocks["B"]:
                     st.markdown(f"- {phrase}")
             else:
-                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+                st.markdown("_Aucun item significatif._")
 
             # Bloc C
-            st.markdown("#### C. Troubles qualitatifs de la communication (verbale et non verbale)")
+            st.markdown("#### C. Communication")
             if dsm_blocks["C"]:
                 for phrase in dsm_blocks["C"]:
                     st.markdown(f"- {phrase}")
             else:
-                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+                st.markdown("_Aucun item significatif._")
 
             # Bloc D
-            st.markdown("#### D. Troubles de l’imagination")
+            st.markdown("#### D. Imagination")
             if dsm_blocks["D"]:
                 for phrase in dsm_blocks["D"]:
                     st.markdown(f"- {phrase}")
             else:
-                st.markdown("_Aucun item AQ significatif dans ce bloc avec le seuil actuel._")
+                st.markdown("_Aucun item significatif._")
 
-            st.markdown("### Grille CLASS CLINIC – Synthèse quantitative")
+            st.markdown("### Grille CLASS CLINIC – synthèse")
 
-            table_rows = []
+            tbl = []
             for key in ["A", "B", "C", "D"]:
                 c = class_counts[key]
-                table_rows.append(
-                    {
-                        "Section": key,
-                        "Domaine": c["label"],
-                        "Nb requis": c["required"],
-                        "Nb observés": c["observed"],
-                        "Nb items possibles": c["max_items"],
-                    }
-                )
-            total = class_counts["TOTAL"]
-            table_rows.append(
-                {
-                    "Section": "Total",
-                    "Domaine": total["label"],
-                    "Nb requis": total["required"],
-                    "Nb observés": total["observed"],
-                    "Nb items possibles": total["max_items"],
-                }
-            )
-            st.table(table_rows)
+                tbl.append({
+                    "Section": key,
+                    "Domaine": c["label"],
+                    "Nb requis": c["required"],
+                    "Nb observés": c["observed"],
+                    "Nb items possibles": c["max_items"],
+                })
+            tot = class_counts["TOTAL"]
+            tbl.append({
+                "Section": "Total",
+                "Domaine": tot["label"],
+                "Nb requis": tot["required"],
+                "Nb observés": tot["observed"],
+                "Nb items possibles": tot["max_items"],
+            })
+            st.table(tbl)
 
-            st.markdown("### Pré-requis E–I (réponses du patient)")
+            st.markdown("### Pré-requis (réponses du patient)")
+            
+            def fmt(b): return "✅ Oui" if b else "❌ Non"
 
-            def format_flag(flag: bool) -> str:
-                return "✅ Oui" if flag else "❌ Non"
+            st.markdown(f"- **E** : présent depuis l’enfance – {fmt(prereq_flags['E'])}")
+            st.markdown(f"- **F** : impact significatif – {fmt(prereq_flags['F'])}")
+            st.markdown(f"- **G** : pas de retard langage – {fmt(prereq_flags['G'])}")
+            st.markdown(f"- **H** : pas de trouble apprentissage majeur – {fmt(prereq_flags['H'])}")
+            st.markdown(f"- **I** : pas de traits psychotiques – {fmt(prereq_flags['I'])}")
 
-            st.markdown(f"- **E. Présence depuis l’enfance** : {format_flag(prereq_flags['E'])}")
-            st.markdown(f"- **F. Impact fonctionnel significatif** : {format_flag(prereq_flags['F'])}")
-            st.markdown(f"- **G. Pas de retard majeur du langage** : {format_flag(prereq_flags['G'])}")
-            st.markdown(f"- **H. Pas de trouble spécifique majeur des apprentissages** : {format_flag(prereq_flags['H'])}")
-            st.markdown(f"- **I. Pas de traits psychotiques** : {format_flag(prereq_flags['I'])}")
+            st.markdown("### Synthèse clinique automatique")
 
-            st.markdown("### Synthèse clinique automatique (aide à la réflexion, non diagnostic)")
-
-            summary_text = build_class_clinic_summary(class_counts, prereq_flags)
-            st.markdown(summary_text.replace("\n\n", "\n\n---\n\n"))
-
-            st.caption(
-                "⚠️ Cette synthèse est un outil d'aide à l'analyse clinique et ne constitue pas un diagnostic en soi. "
-                "Elle doit toujours être interprétée dans le cadre d'une évaluation globale (anamnèse, observation clinique, "
-                "autres instruments, contexte développemental, etc.)."
-            )
+            summary = build_class_clinic_summary(class_counts, prereq_flags)
+            st.markdown(summary.replace("\n\n", "\n\n---\n\n"))
 
             st.markdown("---")
-            st.subheader("Réponses détaillées AQ")
+            st.subheader("Réponses AQ détaillées")
+            table_aq = [{"Item": i, "Réponse": ANSWER_LABELS[aq_answers[i]]} for i in sorted(aq_answers)]
+            st.dataframe(table_aq, use_container_width=True)
 
-            aq_table = []
-            for i in sorted(aq_answers.keys()):
-                aq_table.append(
-                    {
-                        "Item": i,
-                        "Réponse": ANSWER_LABELS[aq_answers[i]],
-                    }
-                )
-            st.dataframe(aq_table, use_container_width=True)
-
-            st.subheader("Réponses détaillées EQ")
-
-            eq_table = []
-            for i in sorted(eq_answers.keys()):
-                eq_table.append(
-                    {
-                        "Item": i,
-                        "Réponse": ANSWER_LABELS[eq_answers[i]],
-                    }
-                )
-            st.dataframe(eq_table, use_container_width=True)
+            st.subheader("Réponses EQ détaillées")
+            table_eq = [{"Item": i, "Réponse": ANSWER_LABELS[eq_answers[i]]} for i in sorted(eq_answers)]
+            st.dataframe(table_eq, use_container_width=True)
