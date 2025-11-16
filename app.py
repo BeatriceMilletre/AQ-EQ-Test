@@ -19,8 +19,6 @@ st.set_page_config(
 DATA_DIR = "data_aq_eq"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-NOTIFICATION_EMAIL = "beatricemilletre@gmail.com"
-
 
 # =========================================================
 # OUTILS FICHIERS + EMAIL
@@ -47,42 +45,52 @@ def load_response(patient_code: str):
 
 def send_email_notification(patient_code: str, payload: dict):
     """
-    Envoi d’un mail sécurisé, non bloquant.
-    Si les secrets SMTP ne sont pas configurés → rien ne se passe.
+    Envoie un mail via Gmail en utilisant les secrets :
+      - EMAIL_SENDER
+      - EMAIL_APP_PASSWORD
+      - PRACTITIONER_EMAIL
+
+    Si ces secrets ne sont pas définis ou si l'envoi échoue,
+    l'app continue de fonctionner sans planter.
     """
-    if "smtp" not in st.secrets:
-        return
+    required_keys = ["EMAIL_SENDER", "EMAIL_APP_PASSWORD", "PRACTITIONER_EMAIL"]
+    for key in required_keys:
+        if key not in st.secrets:
+            st.sidebar.warning(
+                f"⚠️ Secret manquant : {key}. Aucun email n'a été envoyé."
+            )
+            return
 
-    smtp_conf = st.secrets["smtp"]
+    sender = st.secrets["EMAIL_SENDER"]
+    password = st.secrets["EMAIL_APP_PASSWORD"]
+    recipient = st.secrets["PRACTITIONER_EMAIL"]
 
-    subject = f"Nouveau questionnaire AQ/EQ – patient {patient_code}"
-    body = "\n".join([
-        "Un nouveau questionnaire AQ/EQ a été rempli.",
+    subject = f"Nouveau questionnaire AQ/EQ – code patient {patient_code}"
+    body_lines = [
+        "Un nouveau questionnaire AQ/EQ a été rempli via l'application.",
         "",
         f"Code patient : {patient_code}",
-        f"Identifiant : {payload.get('patient_id','')}",
-        f"Sexe : {payload.get('sex','')}",
-        f"Naissance : {payload.get('dob','')}",
-        f"Passation : {payload.get('test_date','')}",
+        f"Identifiant saisi : {payload.get('patient_id', '')}",
+        f"Sexe : {payload.get('sex', '')}",
+        f"Date de naissance : {payload.get('dob', '')}",
+        f"Date de passation : {payload.get('test_date', '')}",
+        f"Code praticien saisi : {payload.get('practitioner_code', '')}",
         "",
-        "Les réponses sont consultables dans l’espace praticien.",
-    ])
+        "Les réponses détaillées sont disponibles dans l’espace praticien.",
+    ]
 
-    msg = MIMEText(body, _charset="utf-8")
+    msg = MIMEText("\n".join(body_lines), _charset="utf-8")
     msg["Subject"] = subject
-    msg["From"] = smtp_conf.get("FROM", smtp_conf.get("USER"))
-    msg["To"] = NOTIFICATION_EMAIL
+    msg["From"] = sender
+    msg["To"] = recipient
 
     try:
-        with smtplib.SMTP_SSL(
-            smtp_conf["HOST"],
-            int(smtp_conf.get("PORT", 465)),
-            timeout=5
-        ) as server:
-            server.login(smtp_conf["USER"], smtp_conf["PASSWORD"])
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=5) as server:
+            server.login(sender, password)
             server.send_message(msg)
     except Exception:
-        # On n’interrompt jamais l’app si l’email échoue
+        # Si besoin de debug, on peut afficher l'erreur dans la sidebar.
+        # st.sidebar.error(f"Erreur envoi email : {e}")
         return
 
 
@@ -333,20 +341,23 @@ def build_class_clinic_summary(section_counts, prereq_flags):
 
     if core_ok and prereq_ok:
         msg.append(
-            "➡️ Ensemble des critères principaux + prérequis cochés : profil compatible avec un fonctionnement du spectre autistique (à confirmer "
-            "cliniquement, ce résultat n'étant pas un diagnostic)."
+            "➡️ Ensemble des critères principaux + prérequis cochés : profil compatible avec un fonctionnement du spectre autistique "
+            "(à confirmer cliniquement, ce résultat n'étant pas un diagnostic)."
         )
     elif core_ok and not prereq_ok:
         msg.append(
-            "➡️ Critères A–D atteints, mais prérequis non tous remplis (selon les réponses du patient). Interprétation clinique prudente."
+            "➡️ Critères A–D atteints, mais prérequis non tous remplis (selon les réponses du patient). "
+            "Interprétation clinique prudente."
         )
     elif not core_ok and prereq_ok:
         msg.append(
-            "➡️ Pré-requis cochés mais critères A–D partiellement atteints : traits ou particularités possibles, sans réunir tous les critères."
+            "➡️ Pré-requis cochés mais critères A–D partiellement atteints : traits ou particularités possibles, "
+            "sans réunir tous les critères."
         )
     else:
         msg.append(
-            "➡️ Ni les critères ni les prérequis ne sont réunis : particularités possibles mais non compatibles avec le tableau complet."
+            "➡️ Ni les critères ni les prérequis ne sont réunis : particularités possibles "
+            "mais non compatibles avec le tableau complet."
         )
 
     return "\n\n".join(msg)
@@ -449,7 +460,7 @@ if mode.startswith("Je suis un répondant"):
             eq_answers[i] = st.radio(
                 f"{i}. {label}",
                 options=list(ANSWER_LABELS.keys()),
-                format_func=lambda x, _labels=ANSWER_LABELS: _labels[x],
+                format_func=lambda x, _labels=ANSWERER_LABELS: _labels[x],
                 horizontal=True,
                 key=f"EQ_{i}",
             )
@@ -554,7 +565,6 @@ else:
                 "I": bool(prereq_data.get("I", False)),
             }
 
-            # scores
             aq_score = score_aq_officiel(aq_answers)
             eq_score = score_eq_officiel(eq_answers)
             aq_subscores = score_aq_subscales(aq_answers)
