@@ -460,7 +460,7 @@ if mode.startswith("Je suis un répondant"):
             eq_answers[i] = st.radio(
                 f"{i}. {label}",
                 options=list(ANSWER_LABELS.keys()),
-                format_func=lambda x, _labels=ANSWERER_LABELS: _labels[x],
+                format_func=lambda x, _labels=ANSWER_LABELS: _labels[x],
                 horizontal=True,
                 key=f"EQ_{i}",
             )
